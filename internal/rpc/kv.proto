@@ -1,0 +1,13 @@
+syntax = "proto3";
+package raft;
+option go_package = "github.com/moggan1337/raft-kv-store/internal/rpc;rpc";
+
+service KV {
+  rpc Get(Key) returns (Value);
+  rpc Put(PutRequest) returns (PutResponse);
+}
+
+message Key     { string k = 1; }
+message Value   { bool found = 1; bytes v = 2; }
+message PutRequest  { string k = 1; string v = 2; }
+message PutResponse { bool ok = 1; string leader_hint = 2; }
