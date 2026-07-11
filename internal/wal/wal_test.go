@@ -48,7 +48,9 @@ func TestCorruptRecordDetected(t *testing.T) {
 
 	b, err := readFile(path)
 	require.NoError(t, err)
-	b[10] ^= 0xFF
+	// Corrupt the first byte of the CRC. Frame layout is [crc 4][len 4][data N]
+	// so byte 0 is always within the CRC for any payload.
+	b[0] ^= 0xFF
 	require.NoError(t, writeFile(path, b))
 
 	r, err := Open(path, true)
