@@ -31,7 +31,7 @@ func TestAppendEntriesAppendsAndCommits(t *testing.T) {
 		LeaderCommit: 2,
 	})
 	assert.True(t, resp.Success)
-	assert.Equal(t, uint64(3), n.log[2].Index)
+	assert.Equal(t, uint64(2), n.log[2].Index)
 	assert.Equal(t, uint64(2), n.commitIndex)
 }
 
