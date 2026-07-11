@@ -21,13 +21,15 @@ type Node struct {
 	log         []LogEntry
 	commitIndex uint64
 	lastApplied uint64
+	progress    map[int]*Progress // per-peer replication progress (Task 17)
 }
 
 func NewNode(cfg NodeConfig) *Node {
 	return &Node{
-		cfg:  cfg,
-		role: RoleFollower,
-		log:  []LogEntry{{Term: 0, Index: 0, Type: EntryNoop}},
+		cfg:      cfg,
+		role:     RoleFollower,
+		log:      []LogEntry{{Term: 0, Index: 0, Type: EntryNoop}},
+		progress: make(map[int]*Progress),
 	}
 }
 
@@ -47,4 +49,25 @@ func (n *Node) setRole(r Role) {
 	n.mu.Lock()
 	n.role = r
 	n.mu.Unlock()
+}
+
+func (n *Node) LastLogIndex() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return uint64(len(n.log) - 1)
+}
+
+func (n *Node) LastLogTerm() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.log) == 0 {
+		return 0
+	}
+	return n.log[len(n.log)-1].Term
+}
+
+func (n *Node) CommitIndex() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.commitIndex
 }
