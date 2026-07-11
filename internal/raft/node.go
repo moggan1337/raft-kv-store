@@ -22,14 +22,16 @@ type Node struct {
 	commitIndex uint64
 	lastApplied uint64
 	progress    map[int]*Progress // per-peer replication progress (Task 17)
+	proposeCh   chan struct{}      // signals leader's replication loop
 }
 
 func NewNode(cfg NodeConfig) *Node {
 	return &Node{
-		cfg:      cfg,
-		role:     RoleFollower,
-		log:      []LogEntry{{Term: 0, Index: 0, Type: EntryNoop}},
-		progress: make(map[int]*Progress),
+		cfg:       cfg,
+		role:      RoleFollower,
+		log:       []LogEntry{{Term: 0, Index: 0, Type: EntryNoop}},
+		progress:  make(map[int]*Progress),
+		proposeCh: make(chan struct{}, 64),
 	}
 }
 
