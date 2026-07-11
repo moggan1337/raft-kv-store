@@ -1,5 +1,7 @@
 package raft
 
+import "sort"
+
 type AppendRequest struct {
 	Term         uint64
 	LeaderID     int
