@@ -60,7 +60,17 @@ go test -v ./internal/raft/
 
 # Run a single test
 go test -v -run TestBecomeCandidateIncrementsTerm ./internal/raft/
+
+# End-to-end test (spawns the binary, real gRPC client)
+# Requires: make build first
+go test -tags=integration -timeout 60s ./tests/...
 ```
+
+The integration test (`tests/e2e_test.go`, build tag `integration`)
+spawns the actual `raftkvd` binary, connects a gRPC client, Puts
+a value, Gets it back, restarts the binary with the same data dir,
+and verifies the value was recovered from the WAL. It runs in
+~1.5 seconds.
 
 ### Lint
 

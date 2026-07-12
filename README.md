@@ -2,7 +2,7 @@
 
 A replicated, linearizable key-value store using the Raft consensus algorithm. Go 1.22+ with gRPC peer transport and an embedded Write-Ahead Log.
 
-> **Status: 23 of 38 plan tasks complete.** The core Raft algorithm, state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary compiles into a real foreground process. **No end-to-end integration test has run** — unit tests cover each piece but no test has connected a gRPC client to the binary. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what's done and [docs/OPERATIONS.md](docs/OPERATIONS.md) for the roadmap to production-ready.
+> **Status: 25 of 38 plan tasks complete.** The core Raft algorithm, state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary compiles and runs as a real foreground process. **An end-to-end integration test passes** (spawn binary → gRPC Put → gRPC Get → SIGTERM → restart with same data dir → gRPC Get recovers the value). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what's done and [docs/OPERATIONS.md](docs/OPERATIONS.md) for the roadmap to production-ready.
 
 ## Quickstart
 
@@ -16,10 +16,16 @@ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 git clone https://github.com/moggan1337/raft-kv-store
 cd raft-kv-store
 make build && make test
-./bin/raftkvd
+
+# End-to-end test (spawns the binary, real gRPC client, restarts it)
+go test -tags=integration -timeout 60s ./tests/...
+
+# Run the binary
+./bin/raftkvd          # single-node, defaults
+./bin/raftkvd -listen 127.0.0.1:17000 -data /tmp/raft-data
 ```
 
-**27 tests, 7 packages, ~5s runtime.**
+**27 unit tests + 1 e2e test, 7 packages, ~5s + 1.5s.**
 
 ## What Works Today
 

@@ -4,26 +4,28 @@ A replicated, linearizable key-value store using the Raft consensus algorithm. G
 
 ## Status
 
-**M0+M1+M2 (partial)**: 23 of 38 plan tasks complete. The core Raft algorithm (election, log replication, quorum commit), state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary now compiles into a real foreground process that listens on a gRPC port, recovers state from disk, and runs an election timer. There is **no end-to-end integration test yet** — the binary has never actually been connected to a client.
+**M0+M1+M2 (partial)**: 25 of 38 plan tasks complete. The core Raft algorithm, state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary is real, runs as a foreground process, and **an end-to-end integration test passes** (spawn binary → gRPC client Put → applier applies → gRPC client Get returns value → SIGTERM → spawn again with same data dir → state recovered → Get returns value).
 
-**What works today (locally):**
-- Single-node Raft (Follower state, can transition to Candidate/Leader via `BecomeCandidate`/`BecomeLeader`)
+**What works today (verified by `tests/e2e_test.go`):**
+- Single-node Raft: Follower → Candidate → Leader transition within ~200ms of startup
 - Vote request handling (term updates, log up-to-date check)
 - AppendEntries handler (consistency check, conflict truncation, commit advance)
 - Per-peer Progress tracking with MaybeUpdate / MaybeDecrement
 - Quorum-based commit index advancement (`advanceCommit`)
-- Propose / ProposeNotify on a leader
+- Propose on a leader
 - WAL append + CRC32 + replay
-- PersistentState Persist/Recover (atomic JSON file write via temp+rename)
+- **State persistence across restarts**: `Persist` writes `term, votedFor, log` atomically; `Recover` reads them back; applier replays the log into the state machine on startup
 - Applier that walks committed log to a user callback
 - gRPC RequestVote / AppendEntries via bufconn + via real GRPCTransport
-- KV gRPC service with Get / Put
+- KV gRPC service with Get / Put (reads from the state machine, not an optimistic local cache)
 - Config loading (YAML + defaults)
 - slog JSON logger
 - `cmd/raftkvd` binary: config load, state recover, gRPC server (Raft + KV), election timer, leader loop, periodic persist, signal handling
 
+**Verified end-to-end with:** `go test -tags=integration -timeout 60s ./tests/...` → PASS in ~1.5s.
+
 **What doesn't work yet:**
-- End-to-end integration test (no test has actually connected a gRPC client to the binary and put a value)
+- Multi-node tests (3-node cluster, leader failover, acks=all) — only single-node is verified
 - Snapshot creation / install (the protocol is in the proto but no handler logic)
 - Observability (Prometheus metrics)
 - Docker images, Jepsen-style fault-injection harness
@@ -31,7 +33,7 @@ A replicated, linearizable key-value store using the Raft consensus algorithm. G
 - Read-index protocol for linearizable reads
 - Membership changes (joint consensus)
 - TLS / authentication
-- Production network transport beyond the gRPC wrapper (no actual TCP peer setup is exercised end-to-end)
+- Real TCP peer transport with multi-node: the GRPCTransport is unit-tested with bufconn but a multi-node integration test has not run
 
 ## Data Flow
 
