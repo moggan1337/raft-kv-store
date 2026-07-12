@@ -73,3 +73,38 @@ func (n *Node) CommitIndex() uint64 {
 	defer n.mu.Unlock()
 	return n.commitIndex
 }
+
+// ID returns the configured node ID.
+func (n *Node) ID() int { return n.cfg.ID }
+
+// BecomeCandidate increments the term, votes for self, transitions to Candidate.
+func (n *Node) BecomeCandidate() {
+	n.mu.Lock()
+	n.term++
+	n.role = RoleCandidate
+	n.votedFor = n.cfg.ID
+	n.mu.Unlock()
+}
+
+// BecomeLeader transitions to Leader. Initializes per-peer progress to the
+// tail of the log.
+func (n *Node) BecomeLeader() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.role = RoleLeader
+	lastIdx := uint64(len(n.log) - 1)
+	for pid := range n.progress {
+		n.progress[pid] = &Progress{NextIndex: lastIdx + 1, MatchIndex: 0}
+	}
+}
+
+// StepDown returns the node to Follower with the given higher term.
+func (n *Node) StepDown(term uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if term > n.term {
+		n.term = term
+	}
+	n.role = RoleFollower
+	n.votedFor = -1
+}
