@@ -63,6 +63,13 @@ func (n *Node) Recover(path string) error {
 	if len(n.log) == 0 {
 		n.log = []LogEntry{{Term: 0, Index: 0, Type: EntryNoop}}
 	}
+	// On recovery, treat all log entries as committed so the applier
+	// replays them. For a single-node cluster this is always safe
+	// (entries were durably Persisted after the leader committed them).
+	// For multi-node, a smarter approach would persist the commit
+	// index separately and use it to bound replay.
+	n.commitIndex = uint64(len(n.log) - 1)
+	n.lastApplied = 0
 	n.mu.Unlock()
 	return nil
 }

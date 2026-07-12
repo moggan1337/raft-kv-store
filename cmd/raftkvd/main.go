@@ -27,6 +27,8 @@ func main() {
 	var (
 		configPath = flag.String("config", "", "path to YAML config (optional)")
 		debug      = flag.Bool("debug", false, "enable debug logging")
+		listenAddr = flag.String("listen", "", "override listen_addr (e.g. 127.0.0.1:0 for ephemeral)")
+		dataDir    = flag.String("data", "", "override data_dir")
 	)
 	flag.Parse()
 
@@ -39,6 +41,12 @@ func main() {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "mkdir data dir: %v\n", err)
 		os.Exit(1)
+	}
+	if *listenAddr != "" {
+		cfg.ListenAddr = *listenAddr
+	}
+	if *dataDir != "" {
+		cfg.DataDir = *dataDir
 	}
 
 	// Logger
@@ -110,7 +118,7 @@ func main() {
 	pb.RegisterRaftServer(gsrv, &raftService{node: node, logger: logger, statePath: statePath})
 
 	// KV service
-	pb.RegisterKVServer(gsrv, kvserver.New(&proposerAdapter{node: node}))
+	pb.RegisterKVServer(gsrv, kvserver.New(&proposerAdapter{node: node}, sm))
 
 	go func() {
 		logger.Info("gRPC server listening", "addr", cfg.ListenAddr)
