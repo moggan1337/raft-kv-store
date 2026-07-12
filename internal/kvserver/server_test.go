@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	pb "github.com/moggan1337/raft-kv-store/internal/rpc"
+	"github.com/moggan1337/raft-kv-store/internal/statemachine"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -22,7 +23,8 @@ func (f *fakeProposer) Propose(_ context.Context, _ []byte) error {
 
 func TestPutThenGet(t *testing.T) {
 	prop := &fakeProposer{}
-	srv := New(prop)
+	sm := statemachine.NewMemKV()
+	srv := New(prop, sm)
 	s := grpc.NewServer()
 	pb.RegisterKVServer(s, srv)
 	lis := bufconn.Listen(1024)
