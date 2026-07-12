@@ -2,7 +2,7 @@
 
 A replicated, linearizable key-value store using the Raft consensus algorithm. Go 1.22+ with gRPC peer transport and an embedded Write-Ahead Log.
 
-> **Status: 21 of 38 plan tasks complete.** The core Raft algorithm (election, log replication, quorum commit) is implemented and tested, but the `main.go` entry point, storage layer, snapshotting, and Docker images are not yet built. See [ARCHITECTURE.md](ARCHITECTURE.md) for what's done and [OPERATIONS.md](OPERATIONS.md) for the roadmap to production-ready.
+> **Status: 23 of 38 plan tasks complete.** The core Raft algorithm, state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary compiles into a real foreground process. **No end-to-end integration test has run** — unit tests cover each piece but no test has connected a gRPC client to the binary. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for what's done and [docs/OPERATIONS.md](docs/OPERATIONS.md) for the roadmap to production-ready.
 
 ## Quickstart
 
@@ -16,9 +16,10 @@ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 git clone https://github.com/moggan1337/raft-kv-store
 cd raft-kv-store
 make build && make test
+./bin/raftkvd
 ```
 
-**23 tests, 6 packages, ~5s runtime.**
+**27 tests, 7 packages, ~5s runtime.**
 
 ## What Works Today
 
@@ -26,28 +27,30 @@ make build && make test
 |---|---|---|
 | Election (random timeout, becomeCandidate, RequestVote) | ✅ | 3 |
 | Log replication (AppendEntries, per-peer Progress, quorum commit) | ✅ | 4 |
-| State persistence (PersistentState + VolatileState codec) | ✅ | 1 |
+| State persistence (PersistentState + VolatileState codec + JSON Persist/Recover) | ✅ | 1+3 |
 | Applier (ticker-based, log walk) | ✅ | 1 |
 | Propose / ProposeNotify (leader-side command submission) | ✅ | 2 |
 | WAL (CRC32-framed records, replay) | ✅ | 2 |
+| State machine (MemKV with JSON op codec, snapshot/restore) | ✅ | 4 |
 | gRPC definitions (raft.proto + kv.proto) | ✅ | n/a (generated) |
 | Peer gRPC client (bufconn-tested) | ✅ | 1 |
+| GRPCTransport (real production transport) | ✅ | 3 |
 | KV gRPC server (Get/Put) | ✅ | 1 |
 | Config (YAML load + defaults) | ✅ | 2 |
 | Logging (slog JSON with level filter) | ✅ | 2 |
+| `cmd/raftkvd` binary (loads config, recovers state, serves gRPC, runs election/leader loops, handles signals) | ✅ | n/a |
 
 ## What Doesn't Work Yet
 
-- **No real `main()`**: `raftkvd` just prints a stub message
+- **No end-to-end integration test** — no test has connected a gRPC client to the binary
 - **No 3/5-node cluster startup** — `docker-compose` not written
-- **No storage layer** — `HeapTable` not implemented
-- **No WAL persistence for Node** — restart loses state
 - **No snapshotting** — `InstallSnapshot` RPC exists in proto but no handler
+- **No real TCP peer transport end-to-end** — gRPC transport works in tests via bufconn
 - **No TLS** — gRPC uses `WithInsecure()`
-- **No observability** — no Prometheus, no slog integration
+- **No observability** — no Prometheus, no slog integration into the Node itself
 - **No Jepsen-style fault-injection tests**
 
-See [OPERATIONS.md](OPERATIONS.md) § Roadmap for the full remaining 17 tasks.
+See [OPERATIONS.md](OPERATIONS.md) § Roadmap for the full remaining 15 tasks.
 
 ## Architecture
 
@@ -57,17 +60,19 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the component diagram, data flow, and
 
 ```
 01-raft-kv-store/
-├── cmd/raftkvd/main.go          (stub: prints "raftkvd starting")
+├── cmd/raftkvd/main.go          real entry: config, recover, gRPC, election, leader
 ├── internal/
 │   ├── config/                  typed Config + YAML load
 │   ├── logging/                 slog JSON logger
 │   ├── wal/                     Write-Ahead Log with CRC32 + replay
-│   ├── raft/                    core Raft (Node, vote, replication, leader, apply, propose)
+│   ├── raft/                    core Raft (Node, vote, replication, leader, apply, propose, persist)
 │   ├── rpc/                     generated protobuf (raft.proto, kv.proto)
-│   ├── network/                 gRPC peer client
+│   ├── network/                 gRPC peer client + GRPCTransport
+│   ├── statemachine/            MemKV (state machine)
 │   └── kvserver/                client-facing KV gRPC service
-├── ARCHITECTURE.md              what we built, in detail
-├── OPERATIONS.md                build, test, run, troubleshoot, roadmap
+├── docs/
+│   ├── ARCHITECTURE.md          what we built, in detail
+│   └── OPERATIONS.md            build, test, run, troubleshoot, roadmap
 ├── Makefile                     build, test, lint, run, clean
 ├── .golangci.yml                linter config
 ├── .github/workflows/ci.yml     CI pipeline

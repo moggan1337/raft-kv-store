@@ -4,7 +4,9 @@ Build, test, run, and operate a single-node or multi-node Raft cluster. **Note: 
 
 ## Status
 
-21 of 38 plan tasks complete. The code compiles and all 23 unit tests pass. There is **no working binary** yet — `make build` produces a `raftkvd` that just prints "raftkvd starting" and exits.
+23 of 38 plan tasks complete. The code compiles and all 27 unit tests pass. The `raftkvd` binary is real and runs as a foreground process: it loads config, recovers state from disk, starts a gRPC server (Raft + KV), runs an election timer and leader loop, and shuts down on SIGINT/SIGTERM.
+
+**Caveat (important):** No end-to-end integration test has ever run. The algorithm is unit-tested, but the binary has never been connected to a gRPC client that sends a Put and verifies a Get. A single-node run "should" immediately elect itself as leader, but this is not verified. Treat the binary as a runnable skeleton, not a production-ready server.
 
 ## Building
 
@@ -81,44 +83,35 @@ Runs `golangci-lint` over all packages. Currently clean.
 
 **Total: 23 tests in 6 packages, ~5s runtime.**
 
-## Running (NOT YET WORKING)
+## Running
 
-The current `cmd/raftkvd/main.go` is a stub. A real entry point would do:
+```bash
+# Single-node start (uses defaults)
+./bin/raftkvd
 
-1. Parse CLI flags (node ID, data dir, listen addr, peer addrs)
-2. Open the WAL at `<data-dir>/wal`
-3. Replay WAL to recover Node state
-4. Open gRPC server on `listen_addr` with both `Raft` and `KV` services
-5. Start the election timer
-6. Block on SIGINT / SIGTERM
+# With a config file
+./bin/raftkvd -config /path/to/config.yaml
 
-None of this is wired up. To make `raftkvd` work end-to-end, you would need to:
+# With debug logging
+./bin/raftkvd -debug
 
-```go
-// in cmd/raftkvd/main.go
-func main() {
-    cfg, err := config.Load(*configPath)
-    // ... error handling ...
-
-    wal, err := wal.Open(cfg.WALPath(), false)
-    // ... replay for recovery ...
-
-    node := raft.NewNode(raft.NodeConfig{
-        ID: cfg.NodeID,
-        ElectionMin: cfg.ElectionMin,
-        ElectionMax: cfg.ElectionMax,
-        Heartbeat:   cfg.Heartbeat,
-    })
-    // ... restore state from WAL ...
-
-    // Set up gRPC server with Raft + KV services
-    // Set up peer connections for replication
-    // Start election timer + leader loop
-    // Block on signal
-}
+# Shutdown gracefully
+Ctrl-C   # or: kill -TERM <pid>
 ```
 
-This is approximately Task 23+ in the plan, and is what `cmd/raftkvd/main.go` would need to be replaced with.
+The binary:
+- Reads the config (YAML or defaults)
+- Recovers any prior state from `<data_dir>/state.json`
+- Starts slog JSON logging to stderr
+- Creates the data dir if missing
+- Connects to each peer listed in config (gRPC)
+- Starts gRPC server on `listen_addr` with both `Raft` and `KV` services
+- Runs the election timer (becomes Candidate, then Leader for single-node)
+- Runs the leader loop (sends heartbeats to peers)
+- Periodic state persistence (every 1s)
+- Shuts down gracefully on SIGINT/SIGTERM, doing a final persist
+
+**Caveat (repeated for emphasis):** No end-to-end test has verified the full path (binary boots → client gRPC Put → applier writes to MemKV → response → client gRPC Get). Unit tests cover each piece individually. The binary is a runnable skeleton.
 
 ## Configuration
 
@@ -141,16 +134,16 @@ CLI flag parsing is not yet implemented — the current stub ignores all flags.
 
 ## Known Limitations
 
-1. **No real main()**: `raftkvd` just prints a message and exits
-2. **No cluster startup**: There's no logic to bring up multiple nodes together
-3. **No WAL persistence for Node state**: WAL exists but is not yet wired to Node state
-4. **No snapshotting**: `InstallSnapshot` RPC exists in the proto but the handler doesn't
-5. **No real network transport**: `Transport` is an interface; only a bufconn-based test impl exists
-6. **No TLS**: gRPC uses `WithInsecure()` — only safe on private networks
-7. **No observability**: No Prometheus, no slog integration into the Node
-8. **No follower reads**: All reads go through the leader (via `KV.Get`)
-9. **No leases**: Only read-index is planned (not yet implemented)
-10. **No live log shipping for replacement nodes**: A new node can't join from scratch yet
+1. **No end-to-end integration test**: No test has connected a gRPC client to the binary and verified a Put-then-Get roundtrip. The algorithm is unit-tested but the binary's full data path is not.
+2. **No cluster startup**: There's no logic to bring up multiple nodes together (you'd need to spawn N processes by hand or write a script).
+3. **No snapshotting**: `InstallSnapshot` RPC exists in the proto but the handler returns a stub. Log compaction is unimplemented.
+4. **No real TCP peer transport end-to-end**: The gRPC transport works in tests via bufconn but no test has spun up two real nodes and connected them.
+5. **No TLS**: gRPC uses `WithInsecure()` — only safe on private networks.
+6. **No observability**: No Prometheus, no slog integration into the Node itself (only the main process logs).
+7. **No follower reads**: All reads go through the leader (via `KV.Get`).
+8. **No leases**: Only read-index is planned (not yet implemented).
+9. **No live log shipping for replacement nodes**: A new node can't join from scratch yet (no snapshot install).
+10. **The election/leader loops are hand-rolled** in `main.go` rather than the raft package's tested implementations. They work in theory but haven't been end-to-end verified.
 
 ## Performance (Not Yet Measured)
 

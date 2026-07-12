@@ -4,31 +4,34 @@ A replicated, linearizable key-value store using the Raft consensus algorithm. G
 
 ## Status
 
-**M0+M1+M2 (partial)**: 21 of 38 plan tasks complete. The core Raft algorithm (election, log replication, quorum commit) is implemented and tested. The KV client API, gRPC transport, and protobuf definitions are in place. Storage, snapshot, observability, and deployment are not yet built.
+**M0+M1+M2 (partial)**: 23 of 38 plan tasks complete. The core Raft algorithm (election, log replication, quorum commit), state machine, WAL persistence, KV client API, gRPC transport, and protobuf definitions are all in place. The `cmd/raftkvd` binary now compiles into a real foreground process that listens on a gRPC port, recovers state from disk, and runs an election timer. There is **no end-to-end integration test yet** — the binary has never actually been connected to a client.
 
 **What works today (locally):**
-- Single-node Raft (Follower state, can transition to Candidate/Leader)
+- Single-node Raft (Follower state, can transition to Candidate/Leader via `BecomeCandidate`/`BecomeLeader`)
 - Vote request handling (term updates, log up-to-date check)
 - AppendEntries handler (consistency check, conflict truncation, commit advance)
 - Per-peer Progress tracking with MaybeUpdate / MaybeDecrement
-- Quorum-based commit index advancement
+- Quorum-based commit index advancement (`advanceCommit`)
 - Propose / ProposeNotify on a leader
 - WAL append + CRC32 + replay
+- PersistentState Persist/Recover (atomic JSON file write via temp+rename)
 - Applier that walks committed log to a user callback
-- gRPC RequestVote / AppendEntries (tested via bufconn)
-- KV gRPC service with Get / Put (tested via bufconn)
+- gRPC RequestVote / AppendEntries via bufconn + via real GRPCTransport
+- KV gRPC service with Get / Put
 - Config loading (YAML + defaults)
 - slog JSON logger
+- `cmd/raftkvd` binary: config load, state recover, gRPC server (Raft + KV), election timer, leader loop, periodic persist, signal handling
 
 **What doesn't work yet:**
-- Cluster startup (no main() wires everything together end-to-end)
-- WAL persistence for Node state across restarts
-- Snapshot creation / install (the protocol is in the proto but not the code)
-- Real network transport (Transport is an interface; no TCP implementation yet)
-- Observability (Prometheus, slog integration)
+- End-to-end integration test (no test has actually connected a gRPC client to the binary and put a value)
+- Snapshot creation / install (the protocol is in the proto but no handler logic)
+- Observability (Prometheus metrics)
 - Docker images, Jepsen-style fault-injection harness
 - 5-node docker-compose, GRUB ISO
-- Snapshot-driven recovery
+- Read-index protocol for linearizable reads
+- Membership changes (joint consensus)
+- TLS / authentication
+- Production network transport beyond the gRPC wrapper (no actual TCP peer setup is exercised end-to-end)
 
 ## Data Flow
 
@@ -57,15 +60,22 @@ kvserver.Server                network.Peer                kvserver.Server
                                               kvserver.Server ─┘
 ```
 
-## Component Overview
+### `cmd/raftkvd/main.go` — Process entry point (real)
+Currently a working foreground process. It:
+1. Parses CLI flags (`-config PATH`, `-debug`)
+2. Loads config (YAML or defaults)
+3. Creates the data dir
+4. Builds a slog JSON logger
+5. Creates a `raft.Node` and recovers state from `<data-dir>/state.json`
+6. Creates a `statemachine.MemKV` and wires it to the Node's `Applier`
+7. Starts a `persistLoop` goroutine that saves state every second
+8. Connects to each peer in config (gRPC) and builds a `GRPCTransport`
+9. Starts `electionLoop` (randomized election timer, RequestVote per peer)
+10. Starts `leaderLoop` (heartbeat AppendEntries when leader)
+11. Starts a gRPC server with both `Raft` and `KV` services
+12. Blocks on SIGINT/SIGTERM, then graceful stop + final persist
 
-### `cmd/raftkvd/main.go` — Process entry point (stub)
-Currently prints "raftkvd starting" and exits. Will be expanded to:
-1. Load config from CLI flags
-2. Open WAL, replay entries, recover Node state
-3. Open gRPC server for Raft + KV services
-4. Start election timer
-5. Block on signal
+**Caveat:** The election loop and leader loop are hand-rolled and have NOT been tested in a multi-node cluster. Single-node behavior is correct in theory (a single node should immediately elect itself), but no end-to-end test has verified it.
 
 ### `internal/config` — Typed configuration
 `Config` struct with `NodeID`, `ListenAddr`, `DataDir`, `Peers`, election/heartbeat timeouts, snapshot threshold. `Load(path)` reads YAML or returns defaults when `path == "/nonexistent"`. `SnapshotPath()` and `WALPath()` helpers under `DataDir`.
@@ -86,13 +96,14 @@ Frame format: `[crc 4][len 4][data N]`, big-endian. CRC32-IEEE for corruption de
 The largest package. Contains:
 - **`log.go`** — `LogEntry` with `Term, Index, Type, Data`. `Encode()` / `Decode()` with big-endian framing.
 - **`state.go`** — `Role` enum (Follower/Candidate/Leader). `PersistentState { CurrentTerm, VotedFor, Log }` with `Encode` / `Decode` (binary + gob). `VolatileState { CommitIndex, LastApplied }`.
-- **`node.go`** — `Node` struct guarded by `sync.Mutex`. Holds `cfg, role, term, votedFor, log, commitIndex, lastApplied, progress (per-peer)`, `proposeCh`. `NewNode` returns a Follower with a noop log entry. Accessors: `Role()`, `CurrentTerm()`, `LastLogIndex()`, `LastLogTerm()`, `CommitIndex()`.
+- **`node.go`** — `Node` struct guarded by `sync.Mutex`. Holds `cfg, role, term, votedFor, log, commitIndex, lastApplied, progress (per-peer)`, `proposeCh`. `NewNode` returns a Follower with a noop log entry. Accessors: `Role()`, `CurrentTerm()`, `LastLogIndex()`, `LastLogTerm()`, `CommitIndex()`, `ID()`. Role transitions: `BecomeCandidate()`, `BecomeLeader()`, `StepDown(term)`.
 - **`vote.go`** — `becomeCandidate()` increments term, votes for self, transitions to Candidate. `HandleVoteRequest(req)` implements §5.1: rejects stale term, resets `votedFor` on new term, grants if log is up-to-date and not yet voted this term.
 - **`replication.go`** — `AppendRequest` / `AppendResponse` types. `HandleAppendEntries()` does consistency check, truncates conflicts, appends new entries, advances commit. `Progress { NextIndex, MatchIndex }` with `MaybeUpdate` / `MaybeDecrement`. `ComputeCommitIndex()` (Figure 2 from Raft paper) for quorum-based commit.
 - **`election.go`** — `randomTimeout(min, max)` for jittered election timers.
 - **`leader.go`** — `Transport` interface (`SendAppendEntries`, `SendRequestVote`). `becomeLeader()` initializes per-peer progress. `LeaderLoop(ctx, transport, peerIDs)` ticks every Heartbeat and spawns `replicateOnce` per peer. `replicateOnce()` reads per-peer progress, builds `AppendRequest`, calls the transport, updates progress, and calls `advanceCommit()`.
 - **`apply.go`** — `Applier` with `Run()` (10ms ticker), `Stop()`. Walks log from `lastApplied` to `commitIndex`, invokes user callback for each `EntryCommand`. Locking pattern: collect entries to apply while holding `n.mu`, release before invoking callback (avoids deadlock if callback reads node state).
 - **`propose.go`** — `Propose(ctx, cmd)` returns `ErrNotLeader` on non-leader; on leader: appends `LogEntry{Term, Index, EntryCommand}`, signals `proposeCh` non-blocking. `ProposeNotify(ctx, cmd)` is the awaitable variant: appends, signals, then polls `lastApplied` every 10ms up to a 2-second timeout, also respects `ctx.Done()`.
+- **`persist.go`** — `Persist(path)` writes the Node's current `term, votedFor, log` to a JSON file (atomic via temp+rename). `Recover(path)` restores them. Missing file = fresh start, no error.
 - **`version.go`** — `Version = "0.1.0"`.
 
 ### `internal/network` — gRPC peer transport
